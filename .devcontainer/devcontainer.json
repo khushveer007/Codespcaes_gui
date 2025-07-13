@@ -1,0 +1,15 @@
+   {
+       "name": "Arch Linux Development Container",
+       "image": "archlinux/archlinux:latest",
+       "settings": {
+           "terminal.integrated.shell.linux": "/bin/bash"
+       },
+       "customizations": {
+           "vscode": {
+               "extensions": []
+           }
+       },
+       "forwardPorts": [],
+       "postCreateCommand": "echo 'Dev container initialized!'",
+       "remoteUser": "root"
+   }
