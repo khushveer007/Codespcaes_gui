@@ -352,7 +352,21 @@ install_kali_linux() {
     fi
     
     # Install browsers and utilities
-    sudo apt install -y firefox-esr chromium thunar-archive-plugin file-roller
+    local firefox_package=""
+    if apt list firefox-esr 2>/dev/null | grep -q "firefox-esr/"; then
+        firefox_package="firefox-esr"
+    elif command -v snap >/dev/null 2>&1; then
+        print_status "Installing Firefox via snap..."
+        sudo snap install firefox 2>/dev/null || firefox_package="chromium-browser"
+    else
+        firefox_package="chromium-browser"
+    fi
+    
+    if [[ -n "$firefox_package" ]]; then
+        sudo apt install -y "$firefox_package" chromium thunar-archive-plugin file-roller
+    else
+        sudo apt install -y chromium thunar-archive-plugin file-roller
+    fi
     
     print_success "Kali Linux environment installed"
 }
@@ -360,37 +374,100 @@ install_kali_linux() {
 install_de_debian_based() {
     export DEBIAN_FRONTEND=noninteractive
     
+    # Determine which firefox package to use based on availability
+    local firefox_package=""
+    
+    # Check for firefox-esr first (Debian/older Ubuntu)
+    if apt list firefox-esr 2>/dev/null | grep -q "firefox-esr/"; then
+        firefox_package="firefox-esr"
+    # Check if we can use snap for firefox (Ubuntu 24.04+)
+    elif command -v snap >/dev/null 2>&1; then
+        print_status "Installing Firefox via snap..."
+        sudo snap install firefox 2>/dev/null || {
+            print_warning "Failed to install Firefox via snap, using chromium instead"
+            firefox_package="chromium-browser"
+        }
+    else
+        # Fallback to chromium or other browsers
+        if apt list chromium-browser 2>/dev/null | grep -q "chromium-browser/"; then
+            firefox_package="chromium-browser"
+        elif apt list chromium 2>/dev/null | grep -q "chromium/"; then
+            firefox_package="chromium"
+        else
+            print_warning "No suitable browser package found, skipping browser installation"
+            firefox_package=""
+        fi
+    fi
+    
     case "$SELECTED_DE" in
         "xfce")
-            sudo apt install -y xfce4 xfce4-goodies firefox-esr gedit thunar-archive-plugin file-roller
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y xfce4 xfce4-goodies "$firefox_package" gedit thunar-archive-plugin file-roller
+            else
+                sudo apt install -y xfce4 xfce4-goodies gedit thunar-archive-plugin file-roller
+            fi
             ;;
         "gnome")
-            sudo apt install -y gnome-shell gnome-terminal nautilus gnome-control-center \
-                                metacity gnome-tweaks firefox-esr gedit file-roller
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y gnome-shell gnome-terminal nautilus gnome-control-center \
+                                    metacity gnome-tweaks "$firefox_package" gedit file-roller
+            else
+                sudo apt install -y gnome-shell gnome-terminal nautilus gnome-control-center \
+                                    metacity gnome-tweaks gedit file-roller
+            fi
             ;;
         "kde")
-            sudo apt install -y kde-plasma-desktop plasma-workspace plasma-widgets-addons \
-                                dolphin konsole kate plasma-nm firefox-esr ark okular
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y kde-plasma-desktop plasma-workspace plasma-widgets-addons \
+                                    dolphin konsole kate plasma-nm "$firefox_package" ark okular
+            else
+                sudo apt install -y kde-plasma-desktop plasma-workspace plasma-widgets-addons \
+                                    dolphin konsole kate plasma-nm ark okular
+            fi
             ;;
         "hyprland")
             # Add Hyprland repository for Debian/Ubuntu
-            sudo apt install -y waybar wofi kitty firefox-esr
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y waybar wofi kitty "$firefox_package"
+            else
+                sudo apt install -y waybar wofi kitty
+            fi
             # Note: Hyprland might need to be compiled from source on older systems
             ;;
         "i3")
-            sudo apt install -y i3 i3status dmenu i3lock firefox-esr rxvt-unicode
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y i3 i3status dmenu i3lock "$firefox_package" rxvt-unicode
+            else
+                sudo apt install -y i3 i3status dmenu i3lock rxvt-unicode
+            fi
             ;;
         "cinnamon")
-            sudo apt install -y cinnamon firefox-esr
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y cinnamon "$firefox_package"
+            else
+                sudo apt install -y cinnamon
+            fi
             ;;
         "mate")
-            sudo apt install -y mate-desktop-environment firefox-esr
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y mate-desktop-environment "$firefox_package"
+            else
+                sudo apt install -y mate-desktop-environment
+            fi
             ;;
         "lxde")
-            sudo apt install -y lxde firefox-esr
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y lxde "$firefox_package"
+            else
+                sudo apt install -y lxde
+            fi
             ;;
         "openbox")
-            sudo apt install -y openbox obconf obmenu tint2 firefox-esr
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y openbox obconf obmenu tint2 "$firefox_package"
+            else
+                sudo apt install -y openbox obconf obmenu tint2
+            fi
             ;;
     esac
     print_success "$SELECTED_DE desktop environment installed"
@@ -498,15 +575,30 @@ configure_vnc() {
     # Set VNC password for the user - use vncpasswd with proper input
     print_status "Setting VNC password..."
     if command -v vncpasswd >/dev/null 2>&1; then
-        # Use printf to provide password input to vncpasswd
-        printf "%s\n%s\n" "$PASSWORD" "$PASSWORD" | sudo -u "$USERNAME" vncpasswd 2>/dev/null || {
-            # Alternative: use vncpasswd -f
-            echo "$PASSWORD" | sudo -u "$USERNAME" vncpasswd -f > "/home/$USERNAME/.vnc/passwd"
+        # Use the most reliable method: echo password to vncpasswd -f
+        echo "$PASSWORD" | sudo -u "$USERNAME" vncpasswd -f > "/home/$USERNAME/.vnc/passwd" 2>/dev/null || {
+            # Fallback: use expect-like input
+            print_status "Using interactive VNC password method..."
+            sudo -u "$USERNAME" bash -c "
+                cd /home/$USERNAME
+                expect << EOF >/dev/null 2>&1 || {
+                    # If expect is not available, try printf method
+                    printf '%s\n%s\n' '$PASSWORD' '$PASSWORD' | vncpasswd
+                }
+spawn vncpasswd
+expect \"Password:\"
+send \"$PASSWORD\r\"
+expect \"Verify:\"
+send \"$PASSWORD\r\"
+expect \"Would you like to enter a view-only password\"
+send \"n\r\"
+expect eof
+EOF
+            "
         }
     else
-        # Alternative: create password file manually using openssl
-        print_status "Creating VNC password file manually..."
-        echo "$PASSWORD" | sudo -u "$USERNAME" openssl passwd -stdin | sudo -u "$USERNAME" tee "/home/$USERNAME/.vnc/passwd" > /dev/null
+        print_error "vncpasswd command not found"
+        return 1
     fi
     
     # Ensure correct permissions
@@ -664,11 +756,14 @@ configure_rdp() {
     # Configure XRDP
     sudo sed -i 's/port=3389/port='"$RDP_PORT"'/g' /etc/xrdp/xrdp.ini
     
-    # Configure session
-    echo "exec startxfce4" > ~/.xsession
+    # Configure session for the created user
+    echo "exec startxfce4" | sudo -u "$USERNAME" tee "/home/$USERNAME/.xsession" > /dev/null
+    sudo chmod +x "/home/$USERNAME/.xsession"
     
     # Fix XRDP session issues
-    sudo sed -i 's/allowed_users=console/allowed_users=anybody/g' /etc/X11/Xwrapper.config
+    if [ -f /etc/X11/Xwrapper.config ]; then
+        sudo sed -i 's/allowed_users=console/allowed_users=anybody/g' /etc/X11/Xwrapper.config
+    fi
     
     # Enable and start XRDP service
     sudo systemctl enable xrdp
@@ -685,14 +780,24 @@ start_vnc_server() {
         return
     fi
     
-    print_status "Starting TigerVNC server on $VNC_DISPLAY..."
+    print_status "Starting TigerVNC server on $VNC_DISPLAY as user $USERNAME..."
     
-    if [ ! -f ~/.vnc/passwd ]; then
-        print_warning "VNC password not set. You'll be prompted to create one."
-        vncserver $VNC_DISPLAY -geometry $RESOLUTION -depth 24
-    else
-        vncserver $VNC_DISPLAY -geometry $RESOLUTION -depth 24
+    # Ensure the user has a password file
+    if [ ! -f "/home/$USERNAME/.vnc/passwd" ]; then
+        print_warning "VNC password not set for user $USERNAME. Configuring VNC first..."
+        configure_vnc
     fi
+    
+    # Start VNC server as the created user
+    sudo -u "$USERNAME" bash -c "
+        export HOME=/home/$USERNAME
+        export USER=$USERNAME
+        cd /home/$USERNAME
+        vncserver $VNC_DISPLAY -geometry $RESOLUTION -depth 24 -localhost no 2>/dev/null
+    " || {
+        print_error "Failed to start VNC server"
+        return 1
+    }
     
     sleep 3
     
@@ -700,6 +805,11 @@ start_vnc_server() {
         print_success "VNC server started successfully"
     else
         print_fail "Failed to start VNC server"
+        # Try to get more debugging info
+        print_status "Checking VNC log for errors..."
+        if [ -f "/home/$USERNAME/.vnc/"*"$VNC_DISPLAY.log" ]; then
+            tail -5 "/home/$USERNAME/.vnc/"*"$VNC_DISPLAY.log" 2>/dev/null || true
+        fi
         return 1
     fi
 }
@@ -712,8 +822,40 @@ start_novnc_server() {
         return
     fi
     
-    print_status "Starting noVNC web interface..."
-    websockify --web=/usr/share/novnc/ $NOVNC_PORT localhost:$VNC_PORT > /dev/null 2>&1 &
+    # Check if websockify is available
+    if ! command -v websockify >/dev/null 2>&1; then
+        print_error "websockify command not found. Installing..."
+        case "$SELECTED_OS" in
+            "arch")
+                sudo pacman -S --noconfirm python-websockify || {
+                    print_error "Failed to install websockify on Arch"
+                    return 1
+                }
+                ;;
+            *)
+                sudo apt install -y websockify || {
+                    print_error "Failed to install websockify"
+                    return 1
+                }
+                ;;
+        esac
+    fi
+    
+    # Find noVNC web directory
+    local novnc_web_dir=""
+    if [ -d "/usr/share/novnc" ]; then
+        novnc_web_dir="/usr/share/novnc"
+    elif [ -d "/usr/share/novnc/web" ]; then
+        novnc_web_dir="/usr/share/novnc/web"
+    elif [ -d "/usr/local/share/novnc" ]; then
+        novnc_web_dir="/usr/local/share/novnc"
+    else
+        print_error "noVNC web directory not found"
+        return 1
+    fi
+    
+    print_status "Starting noVNC web interface using $novnc_web_dir..."
+    websockify --web="$novnc_web_dir" "$NOVNC_PORT" "localhost:$VNC_PORT" > /dev/null 2>&1 &
     sleep 3
     
     if is_websockify_running; then
@@ -746,7 +888,11 @@ stop_services() {
     print_header "STOPPING SERVICES"
     
     print_status "Stopping VNC server..."
-    vncserver -kill $VNC_DISPLAY 2>/dev/null || true
+    if [[ -n "$USERNAME" ]]; then
+        sudo -u "$USERNAME" vncserver -kill "$VNC_DISPLAY" 2>/dev/null || true
+    else
+        vncserver -kill "$VNC_DISPLAY" 2>/dev/null || true
+    fi
     
     print_status "Stopping noVNC..."
     pkill -f websockify 2>/dev/null || true
@@ -759,10 +905,22 @@ stop_services() {
 
 stop_remote_services() {
     print_status "Stopping SSH server..."
-    sudo systemctl stop ssh 2>/dev/null || true
+    if [[ "$SELECTED_OS" == "arch" ]]; then
+        sudo systemctl stop sshd 2>/dev/null || true
+    else
+        sudo systemctl stop ssh 2>/dev/null || true
+    fi
     
     print_status "Stopping RDP server..."
-    sudo systemctl stop xrdp 2>/dev/null || true
+    case "$SELECTED_OS" in
+        "arch")
+            # RDP not available on Arch, skip
+            ;;
+        *)
+            sudo systemctl stop xrdp 2>/dev/null || true
+            ;;
+    esac
+}
 }
 
 # Status and information functions
@@ -984,114 +1142,6 @@ install_debian_base() {
         gnupg lsb-release
     
     print_success "Debian base system installed"
-}
-
-# Desktop Environment Installation Functions
-install_desktop_environment() {
-    print_header "INSTALLING DESKTOP ENVIRONMENT: $SELECTED_DE"
-    
-    case "$SELECTED_OS" in
-        "ubuntu"|"debian")
-            install_de_debian_based
-            ;;
-        "kali")
-            install_de_kali
-            ;;
-        "arch")
-            install_de_arch
-            ;;
-    esac
-}
-
-install_de_debian_based() {
-    export DEBIAN_FRONTEND=noninteractive
-    
-    case "$SELECTED_DE" in
-        "xfce")
-            sudo apt install -y xfce4 xfce4-goodies firefox-esr gedit thunar-archive-plugin file-roller
-            ;;
-        "gnome")
-            sudo apt install -y gnome-shell gnome-terminal nautilus gnome-control-center \
-                                metacity gnome-tweaks firefox-esr gedit file-roller
-            ;;
-        "kde")
-            sudo apt install -y kde-plasma-desktop plasma-workspace plasma-widgets-addons \
-                                dolphin konsole kate plasma-nm firefox-esr ark okular
-            ;;
-        "hyprland")
-            # Add Hyprland repository for Debian/Ubuntu
-            sudo apt install -y waybar wofi kitty firefox-esr
-            # Note: Hyprland might need to be compiled from source on older systems
-            ;;
-        "i3")
-            sudo apt install -y i3 i3status dmenu i3lock firefox-esr rxvt-unicode
-            ;;
-        "cinnamon")
-            sudo apt install -y cinnamon firefox-esr
-            ;;
-        "mate")
-            sudo apt install -y mate-desktop-environment firefox-esr
-            ;;
-        "lxde")
-            sudo apt install -y lxde firefox-esr
-            ;;
-        "openbox")
-            sudo apt install -y openbox obconf obmenu tint2 firefox-esr
-            ;;
-    esac
-    print_success "$SELECTED_DE desktop environment installed"
-}
-
-install_de_kali() {
-    case "$SELECTED_DE" in
-        "xfce")
-            sudo apt install -y kali-desktop-xfce
-            ;;
-        "gnome")
-            sudo apt install -y kali-desktop-gnome
-            ;;
-        "kde")
-            sudo apt install -y kali-desktop-kde
-            ;;
-        *)
-            # Default to XFCE for other DEs on Kali
-            sudo apt install -y kali-desktop-xfce
-            install_de_debian_based
-            ;;
-    esac
-    print_success "Kali $SELECTED_DE desktop environment installed"
-}
-
-install_de_arch() {
-    case "$SELECTED_DE" in
-        "xfce")
-            sudo pacman -S --noconfirm xfce4 xfce4-goodies firefox
-            ;;
-        "gnome")
-            sudo pacman -S --noconfirm gnome gnome-extra firefox
-            ;;
-        "kde")
-            sudo pacman -S --noconfirm plasma kde-applications firefox
-            ;;
-        "hyprland")
-            sudo pacman -S --noconfirm hyprland waybar wofi kitty firefox
-            ;;
-        "i3")
-            sudo pacman -S --noconfirm i3-wm i3status dmenu i3lock firefox rxvt-unicode
-            ;;
-        "cinnamon")
-            sudo pacman -S --noconfirm cinnamon firefox
-            ;;
-        "mate")
-            sudo pacman -S --noconfirm mate mate-extra firefox
-            ;;
-        "lxde")
-            sudo pacman -S --noconfirm lxde firefox
-            ;;
-        "openbox")
-            sudo pacman -S --noconfirm openbox obconf tint2 firefox
-            ;;
-    esac
 }
 
 # User Management Functions
