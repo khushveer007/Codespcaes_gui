@@ -209,9 +209,120 @@ detect_running_desktop() {
     fi
 }
 
+# Package environment configuration for Debian-based systems
+configure_package_environment() {
+    print_status "Configuring package installation environment..."
+    
+    case "$SELECTED_OS" in
+        "ubuntu"|"debian"|"kali")
+            # Set environment variables to handle package installation issues
+            export DEBIAN_FRONTEND=noninteractive
+            export DEBCONF_NONINTERACTIVE_SEEN=true
+            export UCF_FORCE_CONFFOLD=YES
+            
+            # Prevent USB device detection errors in container environments
+            if [ ! -d "/sys/bus/usb/devices" ] || [ -z "$(ls -A /sys/bus/usb/devices/ 2>/dev/null)" ]; then
+                print_status "Container environment detected - configuring USB device handling..."
+                sudo mkdir -p /sys/bus/usb/devices/dummy 2>/dev/null || true
+                
+                # Create minimal USB device files to prevent detection errors
+                for interface_file in bInterfaceClass bInterfaceSubClass bInterfaceProtocol; do
+                    if [ ! -f "/sys/bus/usb/devices/dummy/$interface_file" ]; then
+                        echo "09" | sudo tee "/sys/bus/usb/devices/dummy/$interface_file" >/dev/null 2>&1 || true
+                    fi
+                done
+            fi
+            
+            # Handle dpkg-divert usr-merge conflicts
+            print_status "Checking for usr-merge conflicts..."
+            if dpkg-divert --list | grep -q "lib32.*usr-is-merged"; then
+                print_warning "Detected usr-merge diversion conflicts, attempting to resolve..."
+                
+                # Try to remove conflicting diversions safely
+                sudo dpkg-divert --remove --rename /lib32 2>/dev/null || true
+                
+                # Ensure lib32 symlink exists if needed
+                if [ ! -e /lib32 ] && [ -d /usr/lib32 ]; then
+                    sudo ln -sf /usr/lib32 /lib32 2>/dev/null || true
+                fi
+            fi
+            
+            # Configure debconf to minimize interactive prompts
+            echo 'debconf debconf/frontend select Noninteractive' | sudo debconf-set-selections 2>/dev/null || true
+            
+            # Update package cache with error handling
+            print_status "Updating package lists with enhanced error handling..."
+            if ! sudo apt update -qq 2>/dev/null; then
+                print_warning "Initial package update failed, trying with different options..."
+                sudo apt clean
+                sudo apt update --fix-missing -qq 2>/dev/null || {
+                    print_warning "Package update had issues, continuing with existing cache..."
+                }
+            fi
+            ;;
+        *)
+            # For Arch and other systems, minimal configuration
+            export DEBIAN_FRONTEND=noninteractive
+            ;;
+    esac
+    
+    print_success "Package environment configured"
+}
+
+# Safe package installation wrapper with error handling
+safe_apt_install() {
+    local packages=("$@")
+    local retry_count=0
+    local max_retries=3
+    
+    print_status "Installing packages: ${packages[*]}"
+    
+    while [ $retry_count -lt $max_retries ]; do
+        if sudo apt install -y "${packages[@]}" 2>&1 | tee /tmp/apt_install.log; then
+            print_success "Packages installed successfully: ${packages[*]}"
+            return 0
+        else
+            retry_count=$((retry_count + 1))
+            print_warning "Package installation attempt $retry_count failed"
+            
+            # Check for specific errors and handle them
+            if grep -q "dpkg-divert.*usr-is-merged" /tmp/apt_install.log; then
+                print_status "Detected usr-merge conflict, attempting to fix..."
+                sudo dpkg --configure -a 2>/dev/null || true
+                
+                # Try to resolve usr-merge conflicts
+                if dpkg-divert --list | grep -q "lib32.*usr-is-merged"; then
+                    sudo dpkg-divert --remove --rename /lib32 2>/dev/null || true
+                fi
+            fi
+            
+            if grep -q "bInterfaceClass.*No such file" /tmp/apt_install.log; then
+                print_status "USB device detection error detected, creating dummy files..."
+                sudo mkdir -p /sys/bus/usb/devices/dummy 2>/dev/null || true
+                for interface_file in bInterfaceClass bInterfaceSubClass bInterfaceProtocol; do
+                    echo "09" | sudo tee "/sys/bus/usb/devices/dummy/$interface_file" >/dev/null 2>&1 || true
+                done
+            fi
+            
+            if [ $retry_count -lt $max_retries ]; then
+                print_status "Retrying package installation in 5 seconds..."
+                sleep 5
+                sudo apt update -qq 2>/dev/null || true
+            else
+                print_error "Failed to install packages after $max_retries attempts: ${packages[*]}"
+                print_status "Continuing with installation, some features may not work..."
+                return 1
+            fi
+        fi
+    done
+}
+
 # Installation functions
 install_base_packages() {
     print_header "INSTALLING BASE PACKAGES"
+    
+    # Configure environment to handle common Debian package issues
+    configure_package_environment
     
     case "$SELECTED_OS" in
         "arch")
@@ -261,14 +372,14 @@ install_base_packages() {
             
             # Install essential tools first
             print_status "Installing essential tools..."
-            sudo apt install -y openssl procps
+            safe_apt_install openssl procps
             
             # Install VNC server
             if is_package_installed "tigervnc-standalone-server"; then
                 print_status "TigerVNC already installed"
             else
                 print_status "Installing TigerVNC server..."
-                sudo apt install -y tigervnc-standalone-server tigervnc-common
+                safe_apt_install tigervnc-standalone-server tigervnc-common
             fi
             
             # Install noVNC
@@ -276,7 +387,7 @@ install_base_packages() {
                 print_status "noVNC already installed"
             else
                 print_status "Installing noVNC..."
-                sudo apt install -y novnc websockify
+                safe_apt_install novnc websockify
             fi
             
             # Install SSH server
@@ -284,7 +395,7 @@ install_base_packages() {
                 print_status "SSH server already installed"
             else
                 print_status "Installing SSH server..."
-                sudo apt install -y openssh-server
+                safe_apt_install openssh-server
             fi
             
             # Install RDP server
@@ -292,7 +403,7 @@ install_base_packages() {
                 print_status "XRDP already installed"
             else
                 print_status "Installing XRDP server..."
-                sudo apt install -y xrdp
+                safe_apt_install xrdp
             fi
             
             # Install D-Bus X11 integration and related packages
@@ -302,7 +413,7 @@ install_base_packages() {
                     print_status "$pkg already installed"
                 else
                     print_status "Installing $pkg..."
-                    sudo apt install -y "$pkg" || print_warning "Failed to install $pkg, continuing..."
+                    safe_apt_install "$pkg" || print_warning "Failed to install $pkg, continuing..."
                 fi
             done
             
@@ -313,7 +424,7 @@ install_base_packages() {
                     print_status "$pkg already installed"
                 else
                     print_status "Installing $pkg..."
-                    sudo apt install -y "$pkg" || print_warning "Failed to install $pkg, continuing..."
+                    safe_apt_install "$pkg" || print_warning "Failed to install $pkg, continuing..."
                 fi
             done
             ;;
@@ -352,17 +463,17 @@ install_kali_linux() {
     
     # Install Kali desktop
     print_status "Installing Kali XFCE desktop environment..."
-    sudo apt install -y kali-desktop-xfce
+    safe_apt_install kali-desktop-xfce
     
     # Install essential Kali tools
     print_status "Installing Kali penetration testing tools..."
     if [ "$KALI_TOOLS_ENABLED" = true ]; then
-        sudo apt install -y kali-tools-top10 kali-tools-web kali-tools-wireless \
+        safe_apt_install kali-tools-top10 kali-tools-web kali-tools-wireless \
                            metasploit-framework nmap wireshark burpsuite \
                            sqlmap nikto dirb gobuster hydra john hashcat \
                            aircrack-ng recon-ng maltego zaproxy
     else
-        sudo apt install -y kali-tools-top10 nmap wireshark-qt burpsuite sqlmap
+        safe_apt_install kali-tools-top10 nmap wireshark-qt burpsuite sqlmap
     fi
     
     # Install browsers and utilities
@@ -377,9 +488,9 @@ install_kali_linux() {
     fi
     
     if [[ -n "$firefox_package" ]]; then
-        sudo apt install -y "$firefox_package" chromium thunar-archive-plugin file-roller
+        safe_apt_install "$firefox_package" chromium thunar-archive-plugin file-roller
     else
-        sudo apt install -y chromium thunar-archive-plugin file-roller
+        safe_apt_install chromium thunar-archive-plugin file-roller
     fi
     
     print_success "Kali Linux environment installed"
@@ -416,71 +527,71 @@ install_de_debian_based() {
     case "$SELECTED_DE" in
         "xfce")
             if [[ -n "$firefox_package" ]]; then
-                sudo apt install -y xfce4 xfce4-goodies "$firefox_package" gedit thunar-archive-plugin file-roller
+                safe_apt_install xfce4 xfce4-goodies "$firefox_package" gedit thunar-archive-plugin file-roller
             else
-                sudo apt install -y xfce4 xfce4-goodies gedit thunar-archive-plugin file-roller
+                safe_apt_install xfce4 xfce4-goodies gedit thunar-archive-plugin file-roller
             fi
             ;;
         "gnome")
             if [[ -n "$firefox_package" ]]; then
-                sudo apt install -y gnome-shell gnome-terminal nautilus gnome-control-center \
+                safe_apt_install gnome-shell gnome-terminal nautilus gnome-control-center \
                                     metacity gnome-tweaks "$firefox_package" gedit file-roller
             else
-                sudo apt install -y gnome-shell gnome-terminal nautilus gnome-control-center \
+                safe_apt_install gnome-shell gnome-terminal nautilus gnome-control-center \
                                     metacity gnome-tweaks gedit file-roller
             fi
             ;;
         "kde")
             if [[ -n "$firefox_package" ]]; then
-                sudo apt install -y kde-plasma-desktop plasma-workspace plasma-widgets-addons \
+                safe_apt_install kde-plasma-desktop plasma-workspace plasma-widgets-addons \
                                     dolphin konsole kate plasma-nm "$firefox_package" ark okular
             else
-                sudo apt install -y kde-plasma-desktop plasma-workspace plasma-widgets-addons \
+                safe_apt_install kde-plasma-desktop plasma-workspace plasma-widgets-addons \
                                     dolphin konsole kate plasma-nm ark okular
             fi
             ;;
         "hyprland")
             # Add Hyprland repository for Debian/Ubuntu
             if [[ -n "$firefox_package" ]]; then
-                sudo apt install -y waybar wofi kitty "$firefox_package"
+                safe_apt_install waybar wofi kitty "$firefox_package"
             else
-                sudo apt install -y waybar wofi kitty
+                safe_apt_install waybar wofi kitty
             fi
             # Note: Hyprland might need to be compiled from source on older systems
             ;;
         "i3")
             if [[ -n "$firefox_package" ]]; then
-                sudo apt install -y i3 i3status dmenu i3lock "$firefox_package" rxvt-unicode
+                safe_apt_install i3 i3status dmenu i3lock "$firefox_package" rxvt-unicode
             else
-                sudo apt install -y i3 i3status dmenu i3lock rxvt-unicode
+                safe_apt_install i3 i3status dmenu i3lock rxvt-unicode
             fi
             ;;
         "cinnamon")
             if [[ -n "$firefox_package" ]]; then
-                sudo apt install -y cinnamon "$firefox_package"
+                safe_apt_install cinnamon "$firefox_package"
             else
-                sudo apt install -y cinnamon
+                safe_apt_install cinnamon
             fi
             ;;
         "mate")
             if [[ -n "$firefox_package" ]]; then
-                sudo apt install -y mate-desktop-environment "$firefox_package"
+                safe_apt_install mate-desktop-environment "$firefox_package"
             else
-                sudo apt install -y mate-desktop-environment
+                safe_apt_install mate-desktop-environment
             fi
             ;;
         "lxde")
             if [[ -n "$firefox_package" ]]; then
-                sudo apt install -y lxde "$firefox_package"
+                safe_apt_install lxde "$firefox_package"
             else
-                sudo apt install -y lxde
+                safe_apt_install lxde
             fi
             ;;
         "openbox")
             if [[ -n "$firefox_package" ]]; then
-                sudo apt install -y openbox obconf obmenu tint2 "$firefox_package"
+                safe_apt_install openbox obconf obmenu tint2 "$firefox_package"
             else
-                sudo apt install -y openbox obconf obmenu tint2
+                safe_apt_install openbox obconf obmenu tint2
             fi
             ;;
     esac
@@ -1211,8 +1322,7 @@ install_ubuntu_base() {
     sudo apt update -qq
     
     # Install essential packages
-    sudo apt install -y \
-        curl wget git vim nano \
+    safe_apt_install curl wget git vim nano \
         build-essential software-properties-common \
         apt-transport-https ca-certificates \
         gnupg lsb-release
@@ -1232,15 +1342,13 @@ install_kali_base() {
     sudo apt update -qq
     
     # Install Kali base packages
-    sudo apt install -y \
-        kali-linux-core kali-linux-headless \
+    safe_apt_install kali-linux-core kali-linux-headless \
         curl wget git vim nano \
         build-essential
     
     if [[ "$INSTALL_EXTRA_TOOLS" == true ]]; then
         print_status "Installing additional Kali tools..."
-        sudo apt install -y \
-            kali-tools-top10 kali-tools-web kali-tools-wireless \
+        safe_apt_install kali-tools-top10 kali-tools-web kali-tools-wireless \
             metasploit-framework nmap wireshark burpsuite \
             sqlmap nikto dirb gobuster hydra john hashcat \
             aircrack-ng recon-ng maltego zaproxy
@@ -1284,8 +1392,7 @@ install_debian_base() {
     sudo apt update -qq
     
     # Install essential packages
-    sudo apt install -y \
-        curl wget git vim nano \
+    safe_apt_install curl wget git vim nano \
         build-essential \
         apt-transport-https ca-certificates \
         gnupg lsb-release
@@ -1416,7 +1523,7 @@ install_novnc() {
     
     case "$SELECTED_OS" in
         "ubuntu"|"debian"|"kali")
-            sudo apt install -y novnc websockify
+            safe_apt_install novnc websockify
             ;;
         "arch")
             # Install pipx and websockify
@@ -1454,7 +1561,7 @@ install_vnc_server() {
     
     case "$SELECTED_OS" in
         "ubuntu"|"debian"|"kali")
-            sudo apt install -y tigervnc-standalone-server tigervnc-common
+            safe_apt_install tigervnc-standalone-server tigervnc-common
             ;;
         "arch")
             sudo pacman -S --noconfirm tigervnc
@@ -1469,7 +1576,7 @@ install_rdp_server() {
     
     case "$SELECTED_OS" in
         "ubuntu"|"debian"|"kali")
-            sudo apt install -y xrdp
+            safe_apt_install xrdp
             ;;
         "arch")
             # xrdp is available in AUR, install from there or skip for Arch
@@ -1488,7 +1595,7 @@ install_ssh_server() {
     
     case "$SELECTED_OS" in
         "ubuntu"|"debian"|"kali")
-            sudo apt install -y openssh-server
+            safe_apt_install openssh-server
             ;;
         "arch")
             sudo pacman -S --noconfirm openssh
@@ -1503,7 +1610,7 @@ install_x11vnc_server() {
     
     case "$SELECTED_OS" in
         "ubuntu"|"debian"|"kali")
-            sudo apt install -y x11vnc
+            safe_apt_install x11vnc
             ;;
         "arch")
             sudo pacman -S --noconfirm x11vnc
@@ -1972,10 +2079,10 @@ prepare_system() {
             
             # Install essential tools
             if ! command -v curl >/dev/null 2>&1; then
-                sudo apt install -y curl
+                safe_apt_install curl
             fi
             if ! command -v wget >/dev/null 2>&1; then
-                sudo apt install -y wget
+                safe_apt_install wget
             fi
             ;;
     esac
