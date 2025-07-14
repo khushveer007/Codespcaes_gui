@@ -269,7 +269,7 @@ configure_package_environment() {
     print_success "Package environment configured"
 }
 
-# Safe package installation wrapper with error handling
+# Safe package installation wrapper with enhanced error handling
 safe_apt_install() {
     local packages=("$@")
     local retry_count=0
@@ -278,6 +278,7 @@ safe_apt_install() {
     print_status "Installing packages: ${packages[*]}"
     
     while [ $retry_count -lt $max_retries ]; do
+        # Capture both stdout and stderr to a log file
         if sudo apt install -y "${packages[@]}" 2>&1 | tee /tmp/apt_install.log; then
             print_success "Packages installed successfully: ${packages[*]}"
             return 0
@@ -290,10 +291,15 @@ safe_apt_install() {
                 print_status "Detected usr-merge conflict, attempting to fix..."
                 sudo dpkg --configure -a 2>/dev/null || true
                 
-                # Try to resolve usr-merge conflicts
-                if dpkg-divert --list | grep -q "lib32.*usr-is-merged"; then
-                    sudo dpkg-divert --remove --rename /lib32 2>/dev/null || true
-                fi
+                # Try to resolve usr-merge conflicts more aggressively
+                sudo dpkg-divert --list | grep "usr-is-merged" | while read line; do
+                    path=$(echo "$line" | cut -d' ' -f3)
+                    print_status "Removing diversion for: $path"
+                    sudo dpkg-divert --remove "$path" 2>/dev/null || true
+                done
+                
+                # Fix broken packages
+                sudo apt --fix-broken install -y 2>/dev/null || true
             fi
             
             if grep -q "bInterfaceClass.*No such file" /tmp/apt_install.log; then
@@ -304,12 +310,24 @@ safe_apt_install() {
                 done
             fi
             
+            if grep -q "package pre-installation script subprocess returned error" /tmp/apt_install.log; then
+                print_status "Package pre-installation script error detected, trying recovery..."
+                # Try to clean package cache and fix broken packages
+                sudo apt clean
+                sudo apt autoclean
+                sudo apt --fix-broken install -y 2>/dev/null || true
+                # Force configure pending packages
+                sudo dpkg --configure -a 2>/dev/null || true
+            fi
+            
             if [ $retry_count -lt $max_retries ]; then
                 print_status "Retrying package installation in 5 seconds..."
                 sleep 5
                 sudo apt update -qq 2>/dev/null || true
             else
                 print_error "Failed to install packages after $max_retries attempts: ${packages[*]}"
+                print_status "Last error log:"
+                tail -10 /tmp/apt_install.log 2>/dev/null || true
                 print_status "Continuing with installation, some features may not work..."
                 return 1
             fi
@@ -780,6 +798,17 @@ create_vnc_startup_script() {
     
     print_status "Creating VNC startup script for $SELECTED_DE..."
     
+    # Ensure /etc/X11/Xresources exists to prevent compilation errors
+    if [ ! -f /etc/X11/Xresources ]; then
+        print_status "Creating missing /etc/X11/Xresources file..."
+        sudo mkdir -p /etc/X11
+        sudo tee /etc/X11/Xresources > /dev/null << 'XRES_EOF'
+! X11 Resources file
+! Basic X11 settings
+*customization: -color
+XRES_EOF
+    fi
+    
     # Common header for all desktop environments
     sudo -u "$USERNAME" tee "$startup_script" > /dev/null << EOF
 #!/bin/bash
@@ -788,30 +817,43 @@ export XDG_SESSION_TYPE=x11
 export HOME=/home/$USERNAME
 export USER=$USERNAME
 
-# Source system defaults
-[ -r /etc/X11/Xresources ] && xrdb /etc/X11/Xresources
-[ -r \$HOME/.Xresources ] && xrdb \$HOME/.Xresources
+# Source system defaults - with error handling
+[ -r /etc/X11/Xresources ] && xrdb /etc/X11/Xresources 2>/dev/null || true
+[ -r \$HOME/.Xresources ] && xrdb \$HOME/.Xresources 2>/dev/null || true
 
-# D-Bus session setup with comprehensive error handling
+# D-Bus session setup with enhanced error handling and fallbacks
 if [ -z "\$DBUS_SESSION_BUS_ADDRESS" ]; then
     # Ensure D-Bus machine ID exists
     if [ ! -f /var/lib/dbus/machine-id ] && [ ! -f /etc/machine-id ]; then
-        sudo dbus-uuidgen | sudo tee /var/lib/dbus/machine-id > /dev/null 2>&1 || true
-        sudo dbus-uuidgen | sudo tee /etc/machine-id > /dev/null 2>&1 || true
+        # Try to create machine ID files if possible
+        if command -v dbus-uuidgen >/dev/null 2>&1; then
+            dbus-uuidgen 2>/dev/null | sudo tee /var/lib/dbus/machine-id > /dev/null 2>&1 || true
+            dbus-uuidgen 2>/dev/null | sudo tee /etc/machine-id > /dev/null 2>&1 || true
+        fi
     fi
     
-    # Start D-Bus session daemon
-    export \$(dbus-launch --sh-syntax 2>/dev/null) || {
-        # Fallback: try manual D-Bus session setup
-        export DBUS_SESSION_BUS_ADDRESS="unix:path=/tmp/dbus-session-\$USER"
-        dbus-daemon --session --address="\$DBUS_SESSION_BUS_ADDRESS" --nofork --nopidfile --syslog-only &
-        sleep 2
-    }
+    # Try dbus-launch first (most reliable)
+    if command -v dbus-launch >/dev/null 2>&1; then
+        eval \$(dbus-launch --sh-syntax 2>/dev/null) && export DBUS_SESSION_BUS_ADDRESS || {
+            # Fallback: try manual D-Bus session setup
+            export DBUS_SESSION_BUS_ADDRESS="unix:path=/tmp/dbus-session-\$USER-\$\$"
+            if command -v dbus-daemon >/dev/null 2>&1; then
+                dbus-daemon --session --address="\$DBUS_SESSION_BUS_ADDRESS" --nofork --nopidfile --syslog-only 2>/dev/null &
+                sleep 2
+            fi
+        }
+    else
+        print_warning "dbus-launch not found, desktop components may not work properly"
+    fi
 fi
 
-# Ensure D-Bus session is accessible
-export DBUS_SESSION_BUS_ADDRESS
-dbus-update-activation-environment --systemd DISPLAY XAUTHORITY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+# Ensure D-Bus session is accessible and update environment
+if [ -n "\$DBUS_SESSION_BUS_ADDRESS" ]; then
+    export DBUS_SESSION_BUS_ADDRESS
+    # Update D-Bus activation environment if possible
+    command -v dbus-update-activation-environment >/dev/null 2>&1 && \\
+        dbus-update-activation-environment --systemd DISPLAY XAUTHORITY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+fi
 
 # Start user D-Bus services if systemd is available
 if command -v systemctl >/dev/null 2>&1; then
@@ -1526,18 +1568,9 @@ install_novnc() {
             safe_apt_install novnc websockify
             ;;
         "arch")
-            # Install pipx and websockify
-            print_status "Installing pipx and websockify..."
-            sudo pacman -S --noconfirm python-pipx
-            
-            # Use pipx to install websockify in an isolated environment
-            print_status "Installing websockify via pipx..."
-            sudo -u root pipx install websockify
-            
-            # Ensure websockify is in PATH
-            if [ ! -L /usr/local/bin/websockify ]; then
-                sudo ln -sf /root/.local/bin/websockify /usr/local/bin/websockify
-            fi
+            # Install Python websockify via pacman (more reliable than pipx)
+            print_status "Installing websockify and dependencies..."
+            sudo pacman -S --noconfirm python-websockify
             
             # Download and set up noVNC manually
             print_status "Setting up noVNC..."
@@ -1545,9 +1578,15 @@ install_novnc() {
                 sudo mkdir -p /usr/share/novnc
                 sudo pacman -S --noconfirm git
                 cd /tmp
-                sudo git clone https://github.com/novnc/noVNC.git
-                sudo cp -r noVNC/* /usr/share/novnc/
-                sudo rm -rf noVNC
+                sudo git clone https://github.com/novnc/noVNC.git novnc-download 2>/dev/null || {
+                    print_warning "Git clone failed, downloading noVNC archive..."
+                    sudo pacman -S --noconfirm wget
+                    sudo wget -O novnc.tar.gz https://github.com/novnc/noVNC/archive/refs/heads/master.tar.gz
+                    sudo tar -xzf novnc.tar.gz
+                    sudo mv noVNC-master novnc-download
+                }
+                sudo cp -r novnc-download/* /usr/share/novnc/
+                sudo rm -rf novnc-download novnc.tar.gz 2>/dev/null || true
                 sudo chmod +x /usr/share/novnc/utils/novnc_proxy 2>/dev/null || true
             fi
             ;;
@@ -2309,13 +2348,30 @@ start_vnc_service() {
         configure_vnc
     fi
     
+    # Ensure xstartup script exists and is executable
+    if [ ! -f "/home/$USERNAME/.vnc/xstartup" ] || [ ! -x "/home/$USERNAME/.vnc/xstartup" ]; then
+        print_status "VNC startup script missing or not executable, recreating..."
+        create_vnc_startup_script
+        sudo chmod +x "/home/$USERNAME/.vnc/xstartup"
+        sudo chown "$USERNAME:$USERNAME" "/home/$USERNAME/.vnc/xstartup"
+    fi
+    
     # Kill any existing VNC session first
     print_status "Stopping any existing VNC sessions..."
     sudo -u "$USERNAME" vncserver -kill "$VNC_DISPLAY" 2>/dev/null || true
     
-    # Start VNC server as the created user (newer TigerVNC syntax)
+    # Clean up any leftover files
+    sudo rm -f "/home/$USERNAME/.vnc/*.pid" 2>/dev/null || true
+    sudo rm -f "/tmp/.X*-lock" 2>/dev/null || true
+    
+    # Start VNC server as the created user with enhanced options
     print_status "Starting VNC server on display $VNC_DISPLAY..."
-    sudo -u "$USERNAME" vncserver "$VNC_DISPLAY" 2>/dev/null &
+    sudo -u "$USERNAME" bash -c "
+        cd /home/$USERNAME
+        export HOME=/home/$USERNAME
+        export USER=$USERNAME
+        vncserver $VNC_DISPLAY -geometry $RESOLUTION -depth 24 -localhost no -SecurityTypes VncAuth
+    " 2>/tmp/vnc_startup.log
     
     sleep 5
     
@@ -2324,38 +2380,68 @@ start_vnc_service() {
     else
         print_fail "Failed to start VNC server"
         # Try to get more information about the failure
-        print_status "Checking VNC log for errors..."
-        if [ -f "/home/$USERNAME/.vnc/"*".log" ]; then
-            print_status "VNC log contents:"
-            tail -5 "/home/$USERNAME/.vnc/"*".log" 2>/dev/null || true
+        print_status "Checking VNC startup log for errors..."
+        if [ -f /tmp/vnc_startup.log ]; then
+            print_status "VNC startup log:"
+            cat /tmp/vnc_startup.log
         fi
+        if [ -f "/home/$USERNAME/.vnc/"*"$VNC_DISPLAY.log" ]; then
+            print_status "VNC session log (last 10 lines):"
+            tail -10 "/home/$USERNAME/.vnc/"*"$VNC_DISPLAY.log" 2>/dev/null || true
+        fi
+        return 1
     fi
 }
 
 start_novnc_service() {
     print_status "Starting noVNC web interface..."
     
-    # Determine the correct noVNC path based on OS
-    local novnc_path
-    if [[ "$SELECTED_OS" == "arch" ]]; then
-        novnc_path="/usr/share/novnc"
-    else
-        novnc_path="/usr/share/novnc"
+    # Find the correct noVNC path with multiple fallbacks
+    local novnc_path=""
+    local possible_paths=(
+        "/usr/share/novnc"
+        "/usr/share/novnc/web"
+        "/usr/local/share/novnc"
+        "/opt/novnc"
+        "/usr/lib/novnc"
+    )
+    
+    for path in "${possible_paths[@]}"; do
+        if [ -d "$path" ] && [ -f "$path/vnc.html" -o -f "$path/vnc_lite.html" -o -f "$path/index.html" ]; then
+            novnc_path="$path"
+            print_status "Found noVNC at: $novnc_path"
+            break
+        fi
+    done
+    
+    if [ -z "$novnc_path" ]; then
+        print_error "noVNC web directory not found in any standard location"
+        print_status "Attempted paths: ${possible_paths[*]}"
+        return 1
     fi
     
     # Check if websockify command is available
     if ! command -v websockify >/dev/null 2>&1; then
         print_error "websockify command not found. Please ensure it's installed."
+        print_status "For Arch: sudo pacman -S python-websockify"
+        print_status "For Debian/Ubuntu: sudo apt install websockify"
         return 1
     fi
     
-    websockify --web="$novnc_path" "$NOVNC_PORT" "localhost:$VNC_PORT" > /dev/null 2>&1 &
+    # Kill any existing websockify process
+    pkill -f "websockify.*$NOVNC_PORT" 2>/dev/null || true
+    sleep 1
+    
+    print_status "Starting websockify with noVNC web path: $novnc_path"
+    websockify --web="$novnc_path" "$NOVNC_PORT" "localhost:$VNC_PORT" > /tmp/websockify.log 2>&1 &
     sleep 3
     
     if is_websockify_running; then
-        print_success "noVNC web server started successfully"
+        print_success "noVNC web server started successfully on port $NOVNC_PORT"
     else
         print_fail "Failed to start noVNC web server"
+        print_status "Websockify log:"
+        cat /tmp/websockify.log 2>/dev/null | tail -5 || true
     fi
 }
 
