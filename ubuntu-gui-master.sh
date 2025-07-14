@@ -572,19 +572,16 @@ configure_vnc() {
     # Create VNC startup script based on desktop environment
     create_vnc_startup_script
     
-    # Set VNC password for the user - use vncpasswd with proper input
+    # Set VNC password for the user - use the most reliable method
     print_status "Setting VNC password..."
     if command -v vncpasswd >/dev/null 2>&1; then
-        # Use the most reliable method: echo password to vncpasswd -f
-        echo "$PASSWORD" | sudo -u "$USERNAME" vncpasswd -f > "/home/$USERNAME/.vnc/passwd" 2>/dev/null || {
-            # Fallback: use expect-like input
-            print_status "Using interactive VNC password method..."
-            sudo -u "$USERNAME" bash -c "
-                cd /home/$USERNAME
-                expect << EOF >/dev/null 2>&1 || {
-                    # If expect is not available, try printf method
-                    printf '%s\n%s\n' '$PASSWORD' '$PASSWORD' | vncpasswd
-                }
+        # Use interactive vncpasswd method that works consistently
+        sudo -u "$USERNAME" bash -c "
+            cd /home/$USERNAME
+            expect << 'EOF' >/dev/null 2>&1 || {
+                # If expect is not available, use printf method
+                printf '%s\n%s\nn\n' '$PASSWORD' '$PASSWORD' | vncpasswd
+            }
 spawn vncpasswd
 expect \"Password:\"
 send \"$PASSWORD\r\"
@@ -594,8 +591,22 @@ expect \"Would you like to enter a view-only password\"
 send \"n\r\"
 expect eof
 EOF
-            "
+        " || {
+            # Final fallback - use vncpasswd -f if available
+            print_status "Using fallback VNC password method..."
+            echo "$PASSWORD" | sudo -u "$USERNAME" vncpasswd -f > "/home/$USERNAME/.vnc/passwd" 2>/dev/null
         }
+        
+        # Ensure correct permissions
+        sudo chmod 600 "/home/$USERNAME/.vnc/passwd" 2>/dev/null || true
+        sudo chown "$USERNAME:$USERNAME" "/home/$USERNAME/.vnc/passwd" 2>/dev/null || true
+        
+        if [ -f "/home/$USERNAME/.vnc/passwd" ]; then
+            print_success "VNC password configured successfully"
+        else
+            print_error "Failed to create VNC password file"
+            return 1
+        fi
     else
         print_error "vncpasswd command not found"
         return 1
