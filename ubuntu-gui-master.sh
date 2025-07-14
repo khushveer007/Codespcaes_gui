@@ -295,13 +295,27 @@ install_base_packages() {
                 sudo apt install -y xrdp
             fi
             
-            # Install D-Bus X11 integration
-            if is_package_installed "dbus-x11"; then
-                print_status "D-Bus X11 already installed"
-            else
-                print_status "Installing D-Bus X11 integration..."
-                sudo apt install -y dbus-x11
-            fi
+            # Install D-Bus X11 integration and related packages
+            local dbus_packages=("dbus-x11" "dbus-user-session" "dbus" "at-spi2-core")
+            for pkg in "${dbus_packages[@]}"; do
+                if is_package_installed "$pkg"; then
+                    print_status "$pkg already installed"
+                else
+                    print_status "Installing $pkg..."
+                    sudo apt install -y "$pkg" || print_warning "Failed to install $pkg, continuing..."
+                fi
+            done
+            
+            # Install additional session management packages
+            local session_packages=("systemd" "systemd-logind" "policykit-1")
+            for pkg in "${session_packages[@]}"; do
+                if is_package_installed "$pkg"; then
+                    print_status "$pkg already installed"
+                else
+                    print_status "Installing $pkg..."
+                    sudo apt install -y "$pkg" || print_warning "Failed to install $pkg, continuing..."
+                fi
+            done
             ;;
     esac
     
@@ -352,7 +366,21 @@ install_kali_linux() {
     fi
     
     # Install browsers and utilities
-    sudo apt install -y firefox-esr chromium thunar-archive-plugin file-roller
+    local firefox_package=""
+    if apt list firefox-esr 2>/dev/null | grep -q "firefox-esr/"; then
+        firefox_package="firefox-esr"
+    elif command -v snap >/dev/null 2>&1; then
+        print_status "Installing Firefox via snap..."
+        sudo snap install firefox 2>/dev/null || firefox_package="chromium-browser"
+    else
+        firefox_package="chromium-browser"
+    fi
+    
+    if [[ -n "$firefox_package" ]]; then
+        sudo apt install -y "$firefox_package" chromium thunar-archive-plugin file-roller
+    else
+        sudo apt install -y chromium thunar-archive-plugin file-roller
+    fi
     
     print_success "Kali Linux environment installed"
 }
@@ -360,37 +388,100 @@ install_kali_linux() {
 install_de_debian_based() {
     export DEBIAN_FRONTEND=noninteractive
     
+    # Determine which firefox package to use based on availability
+    local firefox_package=""
+    
+    # Check for firefox-esr first (Debian/older Ubuntu)
+    if apt list firefox-esr 2>/dev/null | grep -q "firefox-esr/"; then
+        firefox_package="firefox-esr"
+    # Check if we can use snap for firefox (Ubuntu 24.04+)
+    elif command -v snap >/dev/null 2>&1; then
+        print_status "Installing Firefox via snap..."
+        sudo snap install firefox 2>/dev/null || {
+            print_warning "Failed to install Firefox via snap, using chromium instead"
+            firefox_package="chromium-browser"
+        }
+    else
+        # Fallback to chromium or other browsers
+        if apt list chromium-browser 2>/dev/null | grep -q "chromium-browser/"; then
+            firefox_package="chromium-browser"
+        elif apt list chromium 2>/dev/null | grep -q "chromium/"; then
+            firefox_package="chromium"
+        else
+            print_warning "No suitable browser package found, skipping browser installation"
+            firefox_package=""
+        fi
+    fi
+    
     case "$SELECTED_DE" in
         "xfce")
-            sudo apt install -y xfce4 xfce4-goodies firefox-esr gedit thunar-archive-plugin file-roller
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y xfce4 xfce4-goodies "$firefox_package" gedit thunar-archive-plugin file-roller
+            else
+                sudo apt install -y xfce4 xfce4-goodies gedit thunar-archive-plugin file-roller
+            fi
             ;;
         "gnome")
-            sudo apt install -y gnome-shell gnome-terminal nautilus gnome-control-center \
-                                metacity gnome-tweaks firefox-esr gedit file-roller
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y gnome-shell gnome-terminal nautilus gnome-control-center \
+                                    metacity gnome-tweaks "$firefox_package" gedit file-roller
+            else
+                sudo apt install -y gnome-shell gnome-terminal nautilus gnome-control-center \
+                                    metacity gnome-tweaks gedit file-roller
+            fi
             ;;
         "kde")
-            sudo apt install -y kde-plasma-desktop plasma-workspace plasma-widgets-addons \
-                                dolphin konsole kate plasma-nm firefox-esr ark okular
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y kde-plasma-desktop plasma-workspace plasma-widgets-addons \
+                                    dolphin konsole kate plasma-nm "$firefox_package" ark okular
+            else
+                sudo apt install -y kde-plasma-desktop plasma-workspace plasma-widgets-addons \
+                                    dolphin konsole kate plasma-nm ark okular
+            fi
             ;;
         "hyprland")
             # Add Hyprland repository for Debian/Ubuntu
-            sudo apt install -y waybar wofi kitty firefox-esr
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y waybar wofi kitty "$firefox_package"
+            else
+                sudo apt install -y waybar wofi kitty
+            fi
             # Note: Hyprland might need to be compiled from source on older systems
             ;;
         "i3")
-            sudo apt install -y i3 i3status dmenu i3lock firefox-esr rxvt-unicode
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y i3 i3status dmenu i3lock "$firefox_package" rxvt-unicode
+            else
+                sudo apt install -y i3 i3status dmenu i3lock rxvt-unicode
+            fi
             ;;
         "cinnamon")
-            sudo apt install -y cinnamon firefox-esr
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y cinnamon "$firefox_package"
+            else
+                sudo apt install -y cinnamon
+            fi
             ;;
         "mate")
-            sudo apt install -y mate-desktop-environment firefox-esr
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y mate-desktop-environment "$firefox_package"
+            else
+                sudo apt install -y mate-desktop-environment
+            fi
             ;;
         "lxde")
-            sudo apt install -y lxde firefox-esr
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y lxde "$firefox_package"
+            else
+                sudo apt install -y lxde
+            fi
             ;;
         "openbox")
-            sudo apt install -y openbox obconf obmenu tint2 firefox-esr
+            if [[ -n "$firefox_package" ]]; then
+                sudo apt install -y openbox obconf obmenu tint2 "$firefox_package"
+            else
+                sudo apt install -y openbox obconf obmenu tint2
+            fi
             ;;
     esac
     print_success "$SELECTED_DE desktop environment installed"
@@ -495,18 +586,44 @@ configure_vnc() {
     # Create VNC startup script based on desktop environment
     create_vnc_startup_script
     
-    # Set VNC password for the user - use vncpasswd with proper input
+    # Set VNC password for the user - use the most reliable method
     print_status "Setting VNC password..."
     if command -v vncpasswd >/dev/null 2>&1; then
-        # Use printf to provide password input to vncpasswd
-        printf "%s\n%s\n" "$PASSWORD" "$PASSWORD" | sudo -u "$USERNAME" vncpasswd 2>/dev/null || {
-            # Alternative: use vncpasswd -f
-            echo "$PASSWORD" | sudo -u "$USERNAME" vncpasswd -f > "/home/$USERNAME/.vnc/passwd"
+        # Use interactive vncpasswd method that works consistently
+        sudo -u "$USERNAME" bash -c "
+            cd /home/$USERNAME
+            expect << 'EOF' >/dev/null 2>&1 || {
+                # If expect is not available, use printf method
+                printf '%s\n%s\nn\n' '$PASSWORD' '$PASSWORD' | vncpasswd
+            }
+spawn vncpasswd
+expect \"Password:\"
+send \"$PASSWORD\r\"
+expect \"Verify:\"
+send \"$PASSWORD\r\"
+expect \"Would you like to enter a view-only password\"
+send \"n\r\"
+expect eof
+EOF
+        " || {
+            # Final fallback - use vncpasswd -f if available
+            print_status "Using fallback VNC password method..."
+            echo "$PASSWORD" | sudo -u "$USERNAME" vncpasswd -f > "/home/$USERNAME/.vnc/passwd" 2>/dev/null
         }
+        
+        # Ensure correct permissions
+        sudo chmod 600 "/home/$USERNAME/.vnc/passwd" 2>/dev/null || true
+        sudo chown "$USERNAME:$USERNAME" "/home/$USERNAME/.vnc/passwd" 2>/dev/null || true
+        
+        if [ -f "/home/$USERNAME/.vnc/passwd" ]; then
+            print_success "VNC password configured successfully"
+        else
+            print_error "Failed to create VNC password file"
+            return 1
+        fi
     else
-        # Alternative: create password file manually using openssl
-        print_status "Creating VNC password file manually..."
-        echo "$PASSWORD" | sudo -u "$USERNAME" openssl passwd -stdin | sudo -u "$USERNAME" tee "/home/$USERNAME/.vnc/passwd" > /dev/null
+        print_error "vncpasswd command not found"
+        return 1
     fi
     
     # Ensure correct permissions
@@ -557,13 +674,47 @@ create_vnc_startup_script() {
 #!/bin/bash
 export XKL_XMODMAP_DISABLE=1
 export XDG_SESSION_TYPE=x11
+export HOME=/home/$USERNAME
+export USER=$USERNAME
 
+# Source system defaults
+[ -r /etc/X11/Xresources ] && xrdb /etc/X11/Xresources
 [ -r \$HOME/.Xresources ] && xrdb \$HOME/.Xresources
 
+# D-Bus session setup with comprehensive error handling
 if [ -z "\$DBUS_SESSION_BUS_ADDRESS" ]; then
-    eval \$(dbus-launch --sh-syntax)
-    export DBUS_SESSION_BUS_ADDRESS
+    # Ensure D-Bus machine ID exists
+    if [ ! -f /var/lib/dbus/machine-id ] && [ ! -f /etc/machine-id ]; then
+        sudo dbus-uuidgen | sudo tee /var/lib/dbus/machine-id > /dev/null 2>&1 || true
+        sudo dbus-uuidgen | sudo tee /etc/machine-id > /dev/null 2>&1 || true
+    fi
+    
+    # Start D-Bus session daemon
+    export \$(dbus-launch --sh-syntax 2>/dev/null) || {
+        # Fallback: try manual D-Bus session setup
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=/tmp/dbus-session-\$USER"
+        dbus-daemon --session --address="\$DBUS_SESSION_BUS_ADDRESS" --nofork --nopidfile --syslog-only &
+        sleep 2
+    }
 fi
+
+# Ensure D-Bus session is accessible
+export DBUS_SESSION_BUS_ADDRESS
+dbus-update-activation-environment --systemd DISPLAY XAUTHORITY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+
+# Start user D-Bus services if systemd is available
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user import-environment DISPLAY XAUTHORITY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+    systemctl --user start dbus.service 2>/dev/null || true
+fi
+
+# Set XDG environment
+export XDG_CONFIG_HOME=\$HOME/.config
+export XDG_DATA_HOME=\$HOME/.local/share
+export XDG_CACHE_HOME=\$HOME/.cache
+
+# Create necessary directories
+mkdir -p \$HOME/.config \$HOME/.local/share \$HOME/.cache
 
 EOF
     
@@ -574,8 +725,28 @@ EOF
 export XDG_CURRENT_DESKTOP=XFCE
 export XDG_SESSION_DESKTOP=xfce
 export DESKTOP_SESSION=xfce
+
+# Set XDG runtime directory with proper permissions
+export XDG_RUNTIME_DIR=/tmp/runtime-$USER
+mkdir -p $XDG_RUNTIME_DIR
+chmod 700 $XDG_RUNTIME_DIR
+
+# Ensure D-Bus session is working
+if [ -n "$DBUS_SESSION_BUS_ADDRESS" ]; then
+    echo "D-Bus session address: $DBUS_SESSION_BUS_ADDRESS" > /tmp/vnc-dbus-debug.log
+    dbus-monitor --session &
+    DBUS_MONITOR_PID=$!
+    echo "D-Bus monitor started with PID: $DBUS_MONITOR_PID" >> /tmp/vnc-dbus-debug.log
+else
+    echo "Warning: No D-Bus session address found" > /tmp/vnc-dbus-debug.log
+fi
+
+# Start XFCE components with error logging
 xsetroot -solid "#2E3440"
-exec startxfce4
+
+# Start XFCE session with D-Bus error handling
+echo "Starting XFCE session..." >> /tmp/vnc-dbus-debug.log
+exec startxfce4 2>&1 | tee -a /tmp/vnc-xfce-debug.log
 EOF
             ;;
         "gnome")
@@ -664,11 +835,14 @@ configure_rdp() {
     # Configure XRDP
     sudo sed -i 's/port=3389/port='"$RDP_PORT"'/g' /etc/xrdp/xrdp.ini
     
-    # Configure session
-    echo "exec startxfce4" > ~/.xsession
+    # Configure session for the created user
+    echo "exec startxfce4" | sudo -u "$USERNAME" tee "/home/$USERNAME/.xsession" > /dev/null
+    sudo chmod +x "/home/$USERNAME/.xsession"
     
     # Fix XRDP session issues
-    sudo sed -i 's/allowed_users=console/allowed_users=anybody/g' /etc/X11/Xwrapper.config
+    if [ -f /etc/X11/Xwrapper.config ]; then
+        sudo sed -i 's/allowed_users=console/allowed_users=anybody/g' /etc/X11/Xwrapper.config
+    fi
     
     # Enable and start XRDP service
     sudo systemctl enable xrdp
@@ -685,14 +859,24 @@ start_vnc_server() {
         return
     fi
     
-    print_status "Starting TigerVNC server on $VNC_DISPLAY..."
+    print_status "Starting TigerVNC server on $VNC_DISPLAY as user $USERNAME..."
     
-    if [ ! -f ~/.vnc/passwd ]; then
-        print_warning "VNC password not set. You'll be prompted to create one."
-        vncserver $VNC_DISPLAY -geometry $RESOLUTION -depth 24
-    else
-        vncserver $VNC_DISPLAY -geometry $RESOLUTION -depth 24
+    # Ensure the user has a password file
+    if [ ! -f "/home/$USERNAME/.vnc/passwd" ]; then
+        print_warning "VNC password not set for user $USERNAME. Configuring VNC first..."
+        configure_vnc
     fi
+    
+    # Start VNC server as the created user
+    sudo -u "$USERNAME" bash -c "
+        export HOME=/home/$USERNAME
+        export USER=$USERNAME
+        cd /home/$USERNAME
+        vncserver $VNC_DISPLAY -geometry $RESOLUTION -depth 24 -localhost no 2>/dev/null
+    " || {
+        print_error "Failed to start VNC server"
+        return 1
+    }
     
     sleep 3
     
@@ -700,6 +884,11 @@ start_vnc_server() {
         print_success "VNC server started successfully"
     else
         print_fail "Failed to start VNC server"
+        # Try to get more debugging info
+        print_status "Checking VNC log for errors..."
+        if [ -f "/home/$USERNAME/.vnc/"*"$VNC_DISPLAY.log" ]; then
+            tail -5 "/home/$USERNAME/.vnc/"*"$VNC_DISPLAY.log" 2>/dev/null || true
+        fi
         return 1
     fi
 }
@@ -712,8 +901,40 @@ start_novnc_server() {
         return
     fi
     
-    print_status "Starting noVNC web interface..."
-    websockify --web=/usr/share/novnc/ $NOVNC_PORT localhost:$VNC_PORT > /dev/null 2>&1 &
+    # Check if websockify is available
+    if ! command -v websockify >/dev/null 2>&1; then
+        print_error "websockify command not found. Installing..."
+        case "$SELECTED_OS" in
+            "arch")
+                sudo pacman -S --noconfirm python-websockify || {
+                    print_error "Failed to install websockify on Arch"
+                    return 1
+                }
+                ;;
+            *)
+                sudo apt install -y websockify || {
+                    print_error "Failed to install websockify"
+                    return 1
+                }
+                ;;
+        esac
+    fi
+    
+    # Find noVNC web directory
+    local novnc_web_dir=""
+    if [ -d "/usr/share/novnc" ]; then
+        novnc_web_dir="/usr/share/novnc"
+    elif [ -d "/usr/share/novnc/web" ]; then
+        novnc_web_dir="/usr/share/novnc/web"
+    elif [ -d "/usr/local/share/novnc" ]; then
+        novnc_web_dir="/usr/local/share/novnc"
+    else
+        print_error "noVNC web directory not found"
+        return 1
+    fi
+    
+    print_status "Starting noVNC web interface using $novnc_web_dir..."
+    websockify --web="$novnc_web_dir" "$NOVNC_PORT" "localhost:$VNC_PORT" > /dev/null 2>&1 &
     sleep 3
     
     if is_websockify_running; then
@@ -746,10 +967,20 @@ stop_services() {
     print_header "STOPPING SERVICES"
     
     print_status "Stopping VNC server..."
-    vncserver -kill $VNC_DISPLAY 2>/dev/null || true
+    # First try to stop VNC using the USERNAME if set
+    if [[ -n "$USERNAME" ]]; then
+        sudo -u "$USERNAME" vncserver -kill "$VNC_DISPLAY" 2>/dev/null || true
+    fi
+    
+    # Also kill any running VNC processes (fallback)
+    pkill -f "Xtigervnc.*:1" 2>/dev/null || true
+    pkill -f "vncserver.*:1" 2>/dev/null || true
     
     print_status "Stopping noVNC..."
     pkill -f websockify 2>/dev/null || true
+    
+    print_status "Stopping X11VNC..."
+    pkill -f x11vnc 2>/dev/null || true
     
     stop_remote_services
     
@@ -759,14 +990,90 @@ stop_services() {
 
 stop_remote_services() {
     print_status "Stopping SSH server..."
-    sudo systemctl stop ssh 2>/dev/null || true
+    if [[ "$SELECTED_OS" == "arch" ]]; then
+        sudo systemctl stop sshd 2>/dev/null || true
+    else
+        sudo systemctl stop ssh 2>/dev/null || true
+    fi
     
     print_status "Stopping RDP server..."
-    sudo systemctl stop xrdp 2>/dev/null || true
+    case "$SELECTED_OS" in
+        "arch")
+            # RDP not available on Arch, skip
+            ;;
+        *)
+            sudo systemctl stop xrdp 2>/dev/null || true
+            ;;
+    esac
 }
 
 # Status and information functions
+check_dbus_status() {
+    print_header "D-BUS DIAGNOSTIC INFORMATION"
+    
+    # Check D-Bus system service
+    if systemctl is-active --quiet dbus; then
+        print_success "D-Bus system service: Running"
+    else
+        print_fail "D-Bus system service: Not running"
+        print_status "Attempting to start D-Bus system service..."
+        sudo systemctl start dbus || print_warning "Failed to start D-Bus system service"
+    fi
+    
+    # Check D-Bus machine ID
+    if [ -f /var/lib/dbus/machine-id ] || [ -f /etc/machine-id ]; then
+        print_success "D-Bus machine ID: Present"
+    else
+        print_fail "D-Bus machine ID: Missing"
+        print_status "Creating D-Bus machine ID..."
+        sudo dbus-uuidgen | sudo tee /var/lib/dbus/machine-id > /dev/null 2>&1 || true
+        sudo dbus-uuidgen | sudo tee /etc/machine-id > /dev/null 2>&1 || true
+    fi
+    
+    # Check user D-Bus session if username is set
+    if [[ -n "$USERNAME" ]]; then
+        print_status "Checking D-Bus session for user: $USERNAME"
+        
+        # Check if user has D-Bus session
+        if sudo -u "$USERNAME" bash -c 'pgrep -u "$USER" dbus-daemon > /dev/null 2>&1'; then
+            print_success "User D-Bus session: Running"
+        else
+            print_warning "User D-Bus session: Not detected"
+        fi
+        
+        # Check D-Bus environment for user
+        if sudo -u "$USERNAME" bash -c '[ -n "$DBUS_SESSION_BUS_ADDRESS" ]' 2>/dev/null; then
+            print_success "User D-Bus environment: Configured"
+        else
+            print_warning "User D-Bus environment: Not configured"
+        fi
+        
+        # Check systemd user session
+        if command -v systemctl >/dev/null 2>&1; then
+            if sudo -u "$USERNAME" systemctl --user is-active --quiet dbus 2>/dev/null; then
+                print_success "User systemd D-Bus service: Running"
+            else
+                print_warning "User systemd D-Bus service: Not running"
+            fi
+        fi
+        
+        # Check debug logs if they exist
+        if [ -f /tmp/vnc-dbus-debug.log ]; then
+            print_status "VNC D-Bus debug log found:"
+            echo -e "${CYAN}$(cat /tmp/vnc-dbus-debug.log)${NC}"
+        fi
+        
+        if [ -f /tmp/vnc-xfce-debug.log ]; then
+            print_status "VNC XFCE debug log found (last 10 lines):"
+            echo -e "${CYAN}$(tail -10 /tmp/vnc-xfce-debug.log)${NC}"
+        fi
+    fi
+    
+    echo ""
+}
+
 show_status() {
+    check_dbus_status
     print_header "SERVICE STATUS"
     
     if is_vnc_running; then
@@ -986,114 +1293,6 @@ install_debian_base() {
     print_success "Debian base system installed"
 }
 
-# Desktop Environment Installation Functions
-install_desktop_environment() {
-    print_header "INSTALLING DESKTOP ENVIRONMENT: $SELECTED_DE"
-    
-    case "$SELECTED_OS" in
-        "ubuntu"|"debian")
-            install_de_debian_based
-            ;;
-        "kali")
-            install_de_kali
-            ;;
-        "arch")
-            install_de_arch
-            ;;
-    esac
-}
-
-install_de_debian_based() {
-    export DEBIAN_FRONTEND=noninteractive
-    
-    case "$SELECTED_DE" in
-        "xfce")
-            sudo apt install -y xfce4 xfce4-goodies firefox-esr gedit thunar-archive-plugin file-roller
-            ;;
-        "gnome")
-            sudo apt install -y gnome-shell gnome-terminal nautilus gnome-control-center \
-                                metacity gnome-tweaks firefox-esr gedit file-roller
-            ;;
-        "kde")
-            sudo apt install -y kde-plasma-desktop plasma-workspace plasma-widgets-addons \
-                                dolphin konsole kate plasma-nm firefox-esr ark okular
-            ;;
-        "hyprland")
-            # Add Hyprland repository for Debian/Ubuntu
-            sudo apt install -y waybar wofi kitty firefox-esr
-            # Note: Hyprland might need to be compiled from source on older systems
-            ;;
-        "i3")
-            sudo apt install -y i3 i3status dmenu i3lock firefox-esr rxvt-unicode
-            ;;
-        "cinnamon")
-            sudo apt install -y cinnamon firefox-esr
-            ;;
-        "mate")
-            sudo apt install -y mate-desktop-environment firefox-esr
-            ;;
-        "lxde")
-            sudo apt install -y lxde firefox-esr
-            ;;
-        "openbox")
-            sudo apt install -y openbox obconf obmenu tint2 firefox-esr
-            ;;
-    esac
-    print_success "$SELECTED_DE desktop environment installed"
-}
-
-install_de_kali() {
-    case "$SELECTED_DE" in
-        "xfce")
-            sudo apt install -y kali-desktop-xfce
-            ;;
-        "gnome")
-            sudo apt install -y kali-desktop-gnome
-            ;;
-        "kde")
-            sudo apt install -y kali-desktop-kde
-            ;;
-        *)
-            # Default to XFCE for other DEs on Kali
-            sudo apt install -y kali-desktop-xfce
-            install_de_debian_based
-            ;;
-    esac
-    print_success "Kali $SELECTED_DE desktop environment installed"
-}
-
-install_de_arch() {
-    case "$SELECTED_DE" in
-        "xfce")
-            sudo pacman -S --noconfirm xfce4 xfce4-goodies firefox
-            ;;
-        "gnome")
-            sudo pacman -S --noconfirm gnome gnome-extra firefox
-            ;;
-        "kde")
-            sudo pacman -S --noconfirm plasma kde-applications firefox
-            ;;
-        "hyprland")
-            sudo pacman -S --noconfirm hyprland waybar wofi kitty firefox
-            ;;
-        "i3")
-            sudo pacman -S --noconfirm i3-wm i3status dmenu i3lock firefox rxvt-unicode
-            ;;
-        "cinnamon")
-            sudo pacman -S --noconfirm cinnamon firefox
-            ;;
-        "mate")
-            sudo pacman -S --noconfirm mate mate-extra firefox
-            ;;
-        "lxde")
-            sudo pacman -S --noconfirm lxde firefox
-            ;;
-        "openbox")
-            sudo pacman -S --noconfirm openbox obconf tint2 firefox
-            ;;
-    esac
-}
-
 # User Management Functions
 create_user_account() {
     print_header "CREATING USER ACCOUNT"
@@ -1140,6 +1339,49 @@ create_user_account() {
     
     # Set up user directories
     sudo -u "$USERNAME" mkdir -p "/home/$USERNAME"/{Desktop,Documents,Downloads,Pictures,Videos}
+    
+    # Initialize D-Bus environment for the user
+    print_status "Setting up D-Bus environment for user $USERNAME..."
+    
+    # Ensure D-Bus machine ID exists
+    if [ ! -f /var/lib/dbus/machine-id ] && [ ! -f /etc/machine-id ]; then
+        print_status "Creating D-Bus machine ID..."
+        sudo dbus-uuidgen | sudo tee /var/lib/dbus/machine-id > /dev/null 2>&1 || true
+        sudo dbus-uuidgen | sudo tee /etc/machine-id > /dev/null 2>&1 || true
+    fi
+    
+    # Create D-Bus configuration directory for user
+    sudo -u "$USERNAME" mkdir -p "/home/$USERNAME/.config/dbus"
+    
+    # Set up systemd user session if available
+    if command -v systemctl >/dev/null 2>&1; then
+        # Enable lingering for the user (allows user services to start at boot)
+        sudo loginctl enable-linger "$USERNAME" 2>/dev/null || true
+        
+        # Create user systemd directory
+        sudo -u "$USERNAME" mkdir -p "/home/$USERNAME/.config/systemd/user"
+    fi
+    
+    # Create .profile for D-Bus environment variables
+    sudo -u "$USERNAME" tee "/home/$USERNAME/.profile" > /dev/null << 'EOF'
+# D-Bus session configuration
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && command -v dbus-launch >/dev/null 2>&1; then
+    eval $(dbus-launch --sh-syntax)
+    export DBUS_SESSION_BUS_ADDRESS
+fi
+
+# XDG directories
+export XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
+export XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
+export XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/runtime-$USER}
+
+# Create runtime directory if it doesn't exist
+if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+    mkdir -p "$XDG_RUNTIME_DIR"
+    chmod 700 "$XDG_RUNTIME_DIR"
+fi
+EOF
     
     print_success "User account '$USERNAME' created with root privileges"
 }
@@ -1646,6 +1888,9 @@ main() {
             ;;
         "status")
             show_current_status
+            ;;
+        "dbus")
+            check_dbus_status
             ;;
         "start")
             start_all_services
@@ -2165,7 +2410,14 @@ stop_all_services() {
     print_header "STOPPING ALL SERVICES"
     
     print_status "Stopping VNC server..."
-    vncserver -kill $VNC_DISPLAY 2>/dev/null || true
+    # First try to stop VNC using the USERNAME if set
+    if [[ -n "$USERNAME" ]]; then
+        sudo -u "$USERNAME" vncserver -kill "$VNC_DISPLAY" 2>/dev/null || true
+    fi
+    
+    # Also kill any running VNC processes (fallback)
+    pkill -f "Xtigervnc.*:1" 2>/dev/null || true
+    pkill -f "vncserver.*:1" 2>/dev/null || true
     
     print_status "Stopping noVNC..."
     pkill -f websockify 2>/dev/null || true
@@ -2213,6 +2465,7 @@ show_help() {
     echo -e "${CYAN}Commands:${NC}"
     echo "  setup        Interactive setup wizard (default, recommended for first use)"
     echo "  status       Show current service status"
+    echo "  dbus         Check D-Bus service status and diagnostics"
     echo "  start        Start all configured services"
     echo "  stop         Stop all services"
     echo "  restart      Restart all services"
@@ -2247,6 +2500,7 @@ show_help() {
     echo "  $0                    # Start interactive setup wizard"
     echo "  $0 setup              # Start interactive setup wizard"
     echo "  $0 status             # Check current service status"
+    echo "  $0 dbus               # Check D-Bus diagnostics"
     echo "  $0 start              # Start all configured services"
     echo "  $0 stop               # Stop all services"
     echo "  $0 kali-tools         # Install security tools"

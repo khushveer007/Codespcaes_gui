@@ -65,6 +65,9 @@ The wizard will ask you to:
 # Check service status
 ./ubuntu-gui-master.sh status
 
+# Check D-Bus diagnostics
+./ubuntu-gui-master.sh dbus
+
 # Start all configured services
 ./ubuntu-gui-master.sh start
 
@@ -197,6 +200,24 @@ ssh -p 2222 [username]@[codespace-name]-2222.app.github.dev
 ./ubuntu-gui-master.sh stop
 ./ubuntu-gui-master.sh setup
 ```
+
+### D-Bus Connection Errors (Desktop Components Not Working)
+If you experience issues with desktop components not working properly after connecting via noVNC:
+
+```bash
+# Check D-Bus status and diagnostics
+./ubuntu-gui-master.sh dbus
+
+# View D-Bus debug logs
+cat /tmp/vnc-dbus-debug.log
+cat /tmp/vnc-xfce-debug.log
+```
+
+Common D-Bus fixes:
+- The script automatically handles D-Bus session setup
+- Machine ID is created automatically if missing
+- User systemd services are configured when available
+- Debug logs are available to help identify specific issues
 
 ### Permission Issues
 The script requires sudo privileges. Make sure you can run:
