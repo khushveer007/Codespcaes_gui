@@ -799,12 +799,19 @@ create_vnc_startup_script() {
     print_status "Creating VNC startup script for $SELECTED_DE..."
     
     # Ensure /etc/X11/Xresources exists to prevent compilation errors
-    if [ ! -f /etc/X11/Xresources ]; then
+    if [ ! -f /etc/X11/Xresources ] && [ ! -d /etc/X11/Xresources ]; then
         print_status "Creating missing /etc/X11/Xresources file..."
         sudo mkdir -p /etc/X11
         sudo tee /etc/X11/Xresources > /dev/null << 'XRES_EOF'
 ! X11 Resources file
 ! Basic X11 settings
+*customization: -color
+XRES_EOF
+    elif [ -d /etc/X11/Xresources ] && [ ! -f /etc/X11/Xresources/x11-common ]; then
+        print_status "Creating X11 resources in existing directory..."
+        sudo tee /etc/X11/Xresources/vnc-common > /dev/null << 'XRES_EOF'
+! VNC X11 Resources file
+! Basic X11 settings for VNC
 *customization: -color
 XRES_EOF
     fi
@@ -819,6 +826,7 @@ export USER=$USERNAME
 
 # Source system defaults - with error handling
 [ -r /etc/X11/Xresources ] && xrdb /etc/X11/Xresources 2>/dev/null || true
+[ -d /etc/X11/Xresources ] && [ -f /etc/X11/Xresources/x11-common ] && xrdb /etc/X11/Xresources/x11-common 2>/dev/null || true
 [ -r \$HOME/.Xresources ] && xrdb \$HOME/.Xresources 2>/dev/null || true
 
 # D-Bus session setup with enhanced error handling and fallbacks
