@@ -295,13 +295,27 @@ install_base_packages() {
                 sudo apt install -y xrdp
             fi
             
-            # Install D-Bus X11 integration
-            if is_package_installed "dbus-x11"; then
-                print_status "D-Bus X11 already installed"
-            else
-                print_status "Installing D-Bus X11 integration..."
-                sudo apt install -y dbus-x11
-            fi
+            # Install D-Bus X11 integration and related packages
+            local dbus_packages=("dbus-x11" "dbus-user-session" "dbus" "at-spi2-core")
+            for pkg in "${dbus_packages[@]}"; do
+                if is_package_installed "$pkg"; then
+                    print_status "$pkg already installed"
+                else
+                    print_status "Installing $pkg..."
+                    sudo apt install -y "$pkg" || print_warning "Failed to install $pkg, continuing..."
+                fi
+            done
+            
+            # Install additional session management packages
+            local session_packages=("systemd" "systemd-logind" "policykit-1")
+            for pkg in "${session_packages[@]}"; do
+                if is_package_installed "$pkg"; then
+                    print_status "$pkg already installed"
+                else
+                    print_status "Installing $pkg..."
+                    sudo apt install -y "$pkg" || print_warning "Failed to install $pkg, continuing..."
+                fi
+            done
             ;;
     esac
     
@@ -667,10 +681,31 @@ export USER=$USERNAME
 [ -r /etc/X11/Xresources ] && xrdb /etc/X11/Xresources
 [ -r \$HOME/.Xresources ] && xrdb \$HOME/.Xresources
 
-# Start dbus session
+# D-Bus session setup with comprehensive error handling
 if [ -z "\$DBUS_SESSION_BUS_ADDRESS" ]; then
-    eval \$(dbus-launch --sh-syntax)
-    export DBUS_SESSION_BUS_ADDRESS
+    # Ensure D-Bus machine ID exists
+    if [ ! -f /var/lib/dbus/machine-id ] && [ ! -f /etc/machine-id ]; then
+        sudo dbus-uuidgen | sudo tee /var/lib/dbus/machine-id > /dev/null 2>&1 || true
+        sudo dbus-uuidgen | sudo tee /etc/machine-id > /dev/null 2>&1 || true
+    fi
+    
+    # Start D-Bus session daemon
+    export \$(dbus-launch --sh-syntax 2>/dev/null) || {
+        # Fallback: try manual D-Bus session setup
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=/tmp/dbus-session-\$USER"
+        dbus-daemon --session --address="\$DBUS_SESSION_BUS_ADDRESS" --nofork --nopidfile --syslog-only &
+        sleep 2
+    }
+fi
+
+# Ensure D-Bus session is accessible
+export DBUS_SESSION_BUS_ADDRESS
+dbus-update-activation-environment --systemd DISPLAY XAUTHORITY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+
+# Start user D-Bus services if systemd is available
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user import-environment DISPLAY XAUTHORITY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+    systemctl --user start dbus.service 2>/dev/null || true
 fi
 
 # Set XDG environment
@@ -690,8 +725,28 @@ EOF
 export XDG_CURRENT_DESKTOP=XFCE
 export XDG_SESSION_DESKTOP=xfce
 export DESKTOP_SESSION=xfce
+
+# Set XDG runtime directory with proper permissions
+export XDG_RUNTIME_DIR=/tmp/runtime-$USER
+mkdir -p $XDG_RUNTIME_DIR
+chmod 700 $XDG_RUNTIME_DIR
+
+# Ensure D-Bus session is working
+if [ -n "$DBUS_SESSION_BUS_ADDRESS" ]; then
+    echo "D-Bus session address: $DBUS_SESSION_BUS_ADDRESS" > /tmp/vnc-dbus-debug.log
+    dbus-monitor --session &
+    DBUS_MONITOR_PID=$!
+    echo "D-Bus monitor started with PID: $DBUS_MONITOR_PID" >> /tmp/vnc-dbus-debug.log
+else
+    echo "Warning: No D-Bus session address found" > /tmp/vnc-dbus-debug.log
+fi
+
+# Start XFCE components with error logging
 xsetroot -solid "#2E3440"
-exec startxfce4
+
+# Start XFCE session with D-Bus error handling
+echo "Starting XFCE session..." >> /tmp/vnc-dbus-debug.log
+exec startxfce4 2>&1 | tee -a /tmp/vnc-xfce-debug.log
 EOF
             ;;
         "gnome")
@@ -953,7 +1008,72 @@ stop_remote_services() {
 }
 
 # Status and information functions
+check_dbus_status() {
+    print_header "D-BUS DIAGNOSTIC INFORMATION"
+    
+    # Check D-Bus system service
+    if systemctl is-active --quiet dbus; then
+        print_success "D-Bus system service: Running"
+    else
+        print_fail "D-Bus system service: Not running"
+        print_status "Attempting to start D-Bus system service..."
+        sudo systemctl start dbus || print_warning "Failed to start D-Bus system service"
+    fi
+    
+    # Check D-Bus machine ID
+    if [ -f /var/lib/dbus/machine-id ] || [ -f /etc/machine-id ]; then
+        print_success "D-Bus machine ID: Present"
+    else
+        print_fail "D-Bus machine ID: Missing"
+        print_status "Creating D-Bus machine ID..."
+        sudo dbus-uuidgen | sudo tee /var/lib/dbus/machine-id > /dev/null 2>&1 || true
+        sudo dbus-uuidgen | sudo tee /etc/machine-id > /dev/null 2>&1 || true
+    fi
+    
+    # Check user D-Bus session if username is set
+    if [[ -n "$USERNAME" ]]; then
+        print_status "Checking D-Bus session for user: $USERNAME"
+        
+        # Check if user has D-Bus session
+        if sudo -u "$USERNAME" bash -c 'pgrep -u "$USER" dbus-daemon > /dev/null 2>&1'; then
+            print_success "User D-Bus session: Running"
+        else
+            print_warning "User D-Bus session: Not detected"
+        fi
+        
+        # Check D-Bus environment for user
+        if sudo -u "$USERNAME" bash -c '[ -n "$DBUS_SESSION_BUS_ADDRESS" ]' 2>/dev/null; then
+            print_success "User D-Bus environment: Configured"
+        else
+            print_warning "User D-Bus environment: Not configured"
+        fi
+        
+        # Check systemd user session
+        if command -v systemctl >/dev/null 2>&1; then
+            if sudo -u "$USERNAME" systemctl --user is-active --quiet dbus 2>/dev/null; then
+                print_success "User systemd D-Bus service: Running"
+            else
+                print_warning "User systemd D-Bus service: Not running"
+            fi
+        fi
+        
+        # Check debug logs if they exist
+        if [ -f /tmp/vnc-dbus-debug.log ]; then
+            print_status "VNC D-Bus debug log found:"
+            echo -e "${CYAN}$(cat /tmp/vnc-dbus-debug.log)${NC}"
+        fi
+        
+        if [ -f /tmp/vnc-xfce-debug.log ]; then
+            print_status "VNC XFCE debug log found (last 10 lines):"
+            echo -e "${CYAN}$(tail -10 /tmp/vnc-xfce-debug.log)${NC}"
+        fi
+    fi
+    
+    echo ""
+}
+
 show_status() {
+    check_dbus_status
     print_header "SERVICE STATUS"
     
     if is_vnc_running; then
@@ -1219,6 +1339,49 @@ create_user_account() {
     
     # Set up user directories
     sudo -u "$USERNAME" mkdir -p "/home/$USERNAME"/{Desktop,Documents,Downloads,Pictures,Videos}
+    
+    # Initialize D-Bus environment for the user
+    print_status "Setting up D-Bus environment for user $USERNAME..."
+    
+    # Ensure D-Bus machine ID exists
+    if [ ! -f /var/lib/dbus/machine-id ] && [ ! -f /etc/machine-id ]; then
+        print_status "Creating D-Bus machine ID..."
+        sudo dbus-uuidgen | sudo tee /var/lib/dbus/machine-id > /dev/null 2>&1 || true
+        sudo dbus-uuidgen | sudo tee /etc/machine-id > /dev/null 2>&1 || true
+    fi
+    
+    # Create D-Bus configuration directory for user
+    sudo -u "$USERNAME" mkdir -p "/home/$USERNAME/.config/dbus"
+    
+    # Set up systemd user session if available
+    if command -v systemctl >/dev/null 2>&1; then
+        # Enable lingering for the user (allows user services to start at boot)
+        sudo loginctl enable-linger "$USERNAME" 2>/dev/null || true
+        
+        # Create user systemd directory
+        sudo -u "$USERNAME" mkdir -p "/home/$USERNAME/.config/systemd/user"
+    fi
+    
+    # Create .profile for D-Bus environment variables
+    sudo -u "$USERNAME" tee "/home/$USERNAME/.profile" > /dev/null << 'EOF'
+# D-Bus session configuration
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && command -v dbus-launch >/dev/null 2>&1; then
+    eval $(dbus-launch --sh-syntax)
+    export DBUS_SESSION_BUS_ADDRESS
+fi
+
+# XDG directories
+export XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
+export XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
+export XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/runtime-$USER}
+
+# Create runtime directory if it doesn't exist
+if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+    mkdir -p "$XDG_RUNTIME_DIR"
+    chmod 700 "$XDG_RUNTIME_DIR"
+fi
+EOF
     
     print_success "User account '$USERNAME' created with root privileges"
 }
@@ -1725,6 +1888,9 @@ main() {
             ;;
         "status")
             show_current_status
+            ;;
+        "dbus")
+            check_dbus_status
             ;;
         "start")
             start_all_services
@@ -2299,6 +2465,7 @@ show_help() {
     echo -e "${CYAN}Commands:${NC}"
     echo "  setup        Interactive setup wizard (default, recommended for first use)"
     echo "  status       Show current service status"
+    echo "  dbus         Check D-Bus service status and diagnostics"
     echo "  start        Start all configured services"
     echo "  stop         Stop all services"
     echo "  restart      Restart all services"
@@ -2333,6 +2500,7 @@ show_help() {
     echo "  $0                    # Start interactive setup wizard"
     echo "  $0 setup              # Start interactive setup wizard"
     echo "  $0 status             # Check current service status"
+    echo "  $0 dbus               # Check D-Bus diagnostics"
     echo "  $0 start              # Start all configured services"
     echo "  $0 stop               # Stop all services"
     echo "  $0 kali-tools         # Install security tools"
