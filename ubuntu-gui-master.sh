@@ -649,13 +649,26 @@ create_vnc_startup_script() {
 #!/bin/bash
 export XKL_XMODMAP_DISABLE=1
 export XDG_SESSION_TYPE=x11
+export HOME=/home/$USERNAME
+export USER=$USERNAME
 
+# Source system defaults
+[ -r /etc/X11/Xresources ] && xrdb /etc/X11/Xresources
 [ -r \$HOME/.Xresources ] && xrdb \$HOME/.Xresources
 
+# Start dbus session
 if [ -z "\$DBUS_SESSION_BUS_ADDRESS" ]; then
     eval \$(dbus-launch --sh-syntax)
     export DBUS_SESSION_BUS_ADDRESS
 fi
+
+# Set XDG environment
+export XDG_CONFIG_HOME=\$HOME/.config
+export XDG_DATA_HOME=\$HOME/.local/share
+export XDG_CACHE_HOME=\$HOME/.cache
+
+# Create necessary directories
+mkdir -p \$HOME/.config \$HOME/.local/share \$HOME/.cache
 
 EOF
     
@@ -888,14 +901,20 @@ stop_services() {
     print_header "STOPPING SERVICES"
     
     print_status "Stopping VNC server..."
+    # First try to stop VNC using the USERNAME if set
     if [[ -n "$USERNAME" ]]; then
         sudo -u "$USERNAME" vncserver -kill "$VNC_DISPLAY" 2>/dev/null || true
-    else
-        vncserver -kill "$VNC_DISPLAY" 2>/dev/null || true
     fi
+    
+    # Also kill any running VNC processes (fallback)
+    pkill -f "Xtigervnc.*:1" 2>/dev/null || true
+    pkill -f "vncserver.*:1" 2>/dev/null || true
     
     print_status "Stopping noVNC..."
     pkill -f websockify 2>/dev/null || true
+    
+    print_status "Stopping X11VNC..."
+    pkill -f x11vnc 2>/dev/null || true
     
     stop_remote_services
     
@@ -920,7 +939,6 @@ stop_remote_services() {
             sudo systemctl stop xrdp 2>/dev/null || true
             ;;
     esac
-}
 }
 
 # Status and information functions
@@ -2215,7 +2233,14 @@ stop_all_services() {
     print_header "STOPPING ALL SERVICES"
     
     print_status "Stopping VNC server..."
-    vncserver -kill $VNC_DISPLAY 2>/dev/null || true
+    # First try to stop VNC using the USERNAME if set
+    if [[ -n "$USERNAME" ]]; then
+        sudo -u "$USERNAME" vncserver -kill "$VNC_DISPLAY" 2>/dev/null || true
+    fi
+    
+    # Also kill any running VNC processes (fallback)
+    pkill -f "Xtigervnc.*:1" 2>/dev/null || true
+    pkill -f "vncserver.*:1" 2>/dev/null || true
     
     print_status "Stopping noVNC..."
     pkill -f websockify 2>/dev/null || true
